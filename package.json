@@ -1,19 +1,8 @@
 {
   "name": "titan-robotic-arm-simulator",
   "version": "1.0.0",
-  "description": "5-DOF Robotic Arm 3D Simulation & Web Controller for ESP8266",
-  "main": "server.js",
+  "private": true,
   "scripts": {
-    "start": "node server.js"
-  },
-  "keywords": [
-    "threejs",
-    "robot-arm",
-    "esp8266",
-    "kinematics",
-    "servo"
-  ],
-  "author": "",
-  "license": "MIT"
+    "start": "node local_server.js"
+  }
 }
-

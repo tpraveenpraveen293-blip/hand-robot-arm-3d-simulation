@@ -2,8 +2,34 @@
   ====================================================================================
   5-DOF ROBOTIC ARM - 3D SIMULATION & REAL-TIME CONTROLLER
   ====================================================================================
-  Three.js Kinematics, WebSockets, Web Serial API, and Motion Choreographer.
+  Three.js Kinematics, WebSockets, Web Serial API, Motion Choreographer,
+  and Universal Browser / Node.js SSR Guard.
 */
+
+// --- Browser Environment Detection & SSR / Node.js Guard ---
+const isBrowser = typeof window !== 'undefined' && typeof document !== 'undefined';
+const globalScope = isBrowser ? window : (typeof globalThis !== 'undefined' ? globalThis : (typeof global !== 'undefined' ? global : {}));
+const getNow = () => (typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now());
+
+// Safe Storage abstraction
+const safeStorage = {
+  getItem: (key) => {
+    try {
+      if (typeof localStorage !== 'undefined') return localStorage.getItem(key);
+    } catch (e) {}
+    return null;
+  },
+  setItem: (key, val) => {
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.setItem(key, val);
+    } catch (e) {}
+  },
+  removeItem: (key) => {
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.removeItem(key);
+    } catch (e) {}
+  }
+};
 
 // --- State & Angle Variables ---
 const NUM_JOINTS = 5;
@@ -34,7 +60,7 @@ const DIM = {
 };
 
 // --- Three.js Globals ---
-let scene, camera, renderer, controls;
+let scene, camera, renderer, controls, transformControls;
 let robotArm = {};
 let targetGhostArm = {};
 let showGhost = true;
@@ -63,27 +89,39 @@ let isPlayingSeq = false;
 let seqIndex = 0;
 let seqTimer = null;
 
-// --- Initialize App ---
-window.addEventListener('DOMContentLoaded', () => {
-  initThree();
-  initUIEvents();
-  renderKeyframesList();
-  updateAnglesDisplay();
-  animate();
-});
-
 // Motion Trail Globals
 const MAX_TRAIL_POINTS = 120;
 let trailPoints = [];
 let trailLine = null;
 
+// --- Initialize App Entry Point ---
+function initApp() {
+  if (!isBrowser) return;
+  initThree();
+  initUIEvents();
+  renderKeyframesList();
+  updateAnglesDisplay();
+  animate();
+}
+
+if (isBrowser) {
+  if (document.readyState === 'loading') {
+    window.addEventListener('DOMContentLoaded', initApp);
+  } else {
+    initApp();
+  }
+}
+
 // ====================================================================================
 // THREE.JS 3D ROBOT RIGGING & SCENE BUILDER
 // ====================================================================================
 function initThree() {
+  if (!isBrowser || typeof THREE === 'undefined') return;
+
   const container = document.getElementById('canvas-container');
-  const width = container.clientWidth;
-  const height = container.clientHeight;
+  if (!container) return;
+  const width = container.clientWidth || 800;
+  const height = container.clientHeight || 600;
 
   // Scene
   scene = new THREE.Scene();
@@ -97,17 +135,20 @@ function initThree() {
   // Renderer
   renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
   renderer.setSize(width, height);
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  const pixelRatio = (typeof window !== 'undefined' && window.devicePixelRatio) ? Math.min(window.devicePixelRatio, 2) : 1;
+  renderer.setPixelRatio(pixelRatio);
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   container.appendChild(renderer.domElement);
 
   // OrbitControls
-  controls = new THREE.OrbitControls(camera, renderer.domElement);
-  controls.enableDamping = true;
-  controls.dampingFactor = 0.05;
-  controls.maxPolarAngle = Math.PI / 2 - 0.02; // Don't go below floor
-  controls.target.set(0, 55, 0);
+  if (typeof THREE.OrbitControls !== 'undefined') {
+    controls = new THREE.OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.05;
+    controls.maxPolarAngle = Math.PI / 2 - 0.02; // Don't go below floor
+    controls.target.set(0, 55, 0);
+  }
 
   // Lights
   const ambientLight = new THREE.AmbientLight(0xffffff, 0.65);
@@ -181,19 +222,27 @@ function initThree() {
     scene.add(transformControls);
 
     transformControls.addEventListener('dragging-changed', (event) => {
-      controls.enabled = !event.value;
+      if (controls) controls.enabled = !event.value;
     });
 
     transformControls.addEventListener('change', () => {
       if (transformControls.dragging) {
         const pos = ikTargetMesh.position;
-        document.getElementById('slider_ik_x').value = Math.round(pos.x);
-        document.getElementById('slider_ik_y').value = Math.round(pos.y);
-        document.getElementById('slider_ik_z').value = Math.round(pos.z);
-        document.getElementById('val_ik_x').textContent = Math.round(pos.x);
-        document.getElementById('val_ik_y').textContent = Math.round(pos.y);
-        document.getElementById('val_ik_z').textContent = Math.round(pos.z);
-        const pitch = parseFloat(document.getElementById('slider_ik_pitch').value);
+        const sx = document.getElementById('slider_ik_x');
+        const sy = document.getElementById('slider_ik_y');
+        const sz = document.getElementById('slider_ik_z');
+        const vx = document.getElementById('val_ik_x');
+        const vy = document.getElementById('val_ik_y');
+        const vz = document.getElementById('val_ik_z');
+        const sp = document.getElementById('slider_ik_pitch');
+
+        if (sx) sx.value = Math.round(pos.x);
+        if (sy) sy.value = Math.round(pos.y);
+        if (sz) sz.value = Math.round(pos.z);
+        if (vx) vx.textContent = Math.round(pos.x);
+        if (vy) vy.textContent = Math.round(pos.y);
+        if (vz) vz.textContent = Math.round(pos.z);
+        const pitch = sp ? parseFloat(sp.value) : 0;
         solveAnalyticalIK(pos.x, pos.y, pos.z, pitch, true);
       }
     });
@@ -203,12 +252,15 @@ function initThree() {
   buildRobotHierarchy();
 
   // Resize handler
-  window.addEventListener('resize', onWindowResize);
+  if (typeof window !== 'undefined') {
+    window.addEventListener('resize', onWindowResize);
+  }
 }
 
 function onWindowResize() {
+  if (!isBrowser) return;
   const container = document.getElementById('canvas-container');
-  if (!container) return;
+  if (!container || !camera || !renderer) return;
   camera.aspect = container.clientWidth / container.clientHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(container.clientWidth, container.clientHeight);
@@ -218,6 +270,8 @@ function onWindowResize() {
 // 3D PROCEDURAL ROBOT RIG (Authentic to User Photos)
 // ====================================================================================
 function buildRobotHierarchy() {
+  if (typeof THREE === 'undefined') return;
+
   // Shared Materials
   const darkPvcMat = new THREE.MeshStandardMaterial({ color: 0x27272a, roughness: 0.6, metalness: 0.2 });
   const whitePlateMat = new THREE.MeshStandardMaterial({ color: 0xe2e8f0, roughness: 0.4 });
@@ -326,12 +380,10 @@ function buildRobotHierarchy() {
   j1Group.position.set(0, pivotY0 + 2.5, 0);
   baseGroup.add(j1Group);
 
-  // Mount bracket on top plate
   const j1Mount = new THREE.Mesh(new THREE.BoxGeometry(7.5, 4, 6), blackBracketMat);
   j1Mount.position.y = -1;
   j1Group.add(j1Mount);
 
-  // Rotating Shoulder Axis
   const j1Rot = new THREE.Group();
   j1Group.add(j1Rot);
 
@@ -392,7 +444,6 @@ function buildRobotHierarchy() {
   const j4Rot = new THREE.Group();
   j4Group.add(j4Rot);
 
-  // Black MG996R Servo Body
   const mg996Body = new THREE.Mesh(new THREE.BoxGeometry(4.2, 4.8, 2.2), blackServoMat);
   mg996Body.position.y = 2.4;
   mg996Body.castShadow = true;
@@ -405,12 +456,10 @@ function buildRobotHierarchy() {
   gripperBase.position.y = 5.2;
   j4Rot.add(gripperBase);
 
-  // Gripper mount plate
   const palmPlate = new THREE.Mesh(new THREE.BoxGeometry(5.5, 0.8, 3.5), blackBracketMat);
   palmPlate.castShadow = true;
   gripperBase.add(palmPlate);
 
-  // Left Claw Jaw
   const leftJawGroup = new THREE.Group();
   leftJawGroup.position.set(-1.8, 0.4, 0);
   gripperBase.add(leftJawGroup);
@@ -420,7 +469,6 @@ function buildRobotHierarchy() {
   leftJawMesh.castShadow = true;
   leftJawGroup.add(leftJawMesh);
 
-  // Right Claw Jaw
   const rightJawGroup = new THREE.Group();
   rightJawGroup.position.set(1.8, 0.4, 0);
   gripperBase.add(rightJawGroup);
@@ -430,7 +478,6 @@ function buildRobotHierarchy() {
   rightJawMesh.castShadow = true;
   rightJawGroup.add(rightJawMesh);
 
-  // Store pointers in robotArm object for easy joint rotation
   robotArm = {
     j1Rot,
     j2Rot,
@@ -444,62 +491,67 @@ function buildRobotHierarchy() {
 
 // Update 3D Robot Pose from Angles (degrees)
 function updateRobotPose(angles) {
-  if (!robotArm.j1Rot) return;
+  if (!robotArm || !robotArm.j1Rot) return;
 
-  // Convert 0..180 deg to radians centered around 90 deg (0 = -PI/2, 90 = 0, 180 = +PI/2)
   const degToRad = (deg) => (deg - 90) * (Math.PI / 180);
 
-  // Joint 1: Base Pitch (Rotates around X)
+  // Joint 1: Base Pitch
   robotArm.j1Rot.rotation.x = degToRad(angles[0]);
 
-  // Joint 2: Elbow Pitch (Rotates around X)
+  // Joint 2: Elbow Pitch
   robotArm.j2Rot.rotation.x = degToRad(angles[1]);
 
-  // Joint 3: Wrist Pitch (Rotates around X)
+  // Joint 3: Wrist Pitch
   robotArm.j3Rot.rotation.x = degToRad(angles[2]);
 
-  // Joint 4: Wrist Roll / Yaw (Rotates around Y)
+  // Joint 4: Wrist Roll
   robotArm.j4Rot.rotation.y = (angles[3] - 90) * (Math.PI / 180);
 
-  // Joint 5: Gripper (0 = closed/touching, 90 = wide open)
-  const gripRad = (angles[4] / 90) * 0.45; // Jaw pivot range
-  robotArm.leftJawGroup.rotation.z = -gripRad;
-  robotArm.rightJawGroup.rotation.z = gripRad;
+  // Joint 5: Gripper
+  const gripRad = (angles[4] / 90) * 0.45;
+  if (robotArm.leftJawGroup) robotArm.leftJawGroup.rotation.z = -gripRad;
+  if (robotArm.rightJawGroup) robotArm.rightJawGroup.rotation.z = gripRad;
 
   // Update End-Effector Telemetry HUD
-  if (robotArm.endEffectorNode) {
-    const worldPos = new THREE.Vector3();
-    robotArm.endEffectorNode.getWorldPosition(worldPos);
-    document.getElementById('hudEndEffector').textContent = 
-      `${worldPos.x.toFixed(1)}, ${worldPos.y.toFixed(1)}, ${worldPos.z.toFixed(1)}`;
+  if (isBrowser && robotArm.endEffectorNode) {
+    const el = document.getElementById('hudEndEffector');
+    if (el) {
+      const worldPos = new THREE.Vector3();
+      robotArm.endEffectorNode.getWorldPosition(worldPos);
+      el.textContent = `${worldPos.x.toFixed(1)}, ${worldPos.y.toFixed(1)}, ${worldPos.z.toFixed(1)}`;
+    }
   }
 }
 
 // ====================================================================================
 // MAIN ANIMATION / RENDER LOOP
 // ====================================================================================
-let lastFrameTime = performance.now();
+let lastFrameTime = getNow();
 let frameCount = 0;
-let lastFpsTime = performance.now();
+let lastFpsTime = getNow();
 
 function animate() {
-  requestAnimationFrame(animate);
+  if (!isBrowser) return;
 
-  const now = performance.now();
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(animate);
+  }
+
+  const now = getNow();
   const dt = (now - lastFrameTime) / 1000.0;
   lastFrameTime = now;
 
   // FPS Counter
   frameCount++;
   if (now - lastFpsTime >= 1000) {
-    document.getElementById('hudFps').textContent = frameCount;
+    const fpsEl = document.getElementById('hudFps');
+    if (fpsEl) fpsEl.textContent = frameCount;
     frameCount = 0;
     lastFpsTime = now;
   }
 
   // Smooth interpolation of currentAngles toward targetAngles (Simulation)
   const maxStep = motionSpeed * dt;
-  let hasMoved = false;
 
   for (let i = 0; i < NUM_JOINTS; i++) {
     const diff = targetAngles[i] - currentAngles[i];
@@ -509,7 +561,6 @@ function animate() {
       } else {
         currentAngles[i] += (diff > 0) ? maxStep : -maxStep;
       }
-      hasMoved = true;
     }
   }
 
@@ -523,14 +574,16 @@ function animate() {
   pollGamepad(dt);
 
   // Update OrbitControls
-  controls.update();
+  if (controls) controls.update();
 
   // Render Three.js Scene
-  renderer.render(scene, camera);
+  if (renderer && scene && camera) {
+    renderer.render(scene, camera);
+  }
 }
 
 function updateMotionTrail() {
-  if (!robotArm.endEffectorNode || !trailLine) return;
+  if (!isBrowser || !robotArm.endEffectorNode || !trailLine) return;
   const worldPos = new THREE.Vector3();
   robotArm.endEffectorNode.getWorldPosition(worldPos);
 
@@ -550,7 +603,8 @@ function updateMotionTrail() {
 }
 
 function pollGamepad(dt) {
-  const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
+  if (!isBrowser || typeof navigator === 'undefined' || !navigator.getGamepads) return;
+  const gamepads = navigator.getGamepads();
   if (!gamepads || !gamepads[0]) return;
   const gp = gamepads[0];
   const deadzone = 0.2;
@@ -558,32 +612,32 @@ function pollGamepad(dt) {
   // Left Stick Y (Axes 1) -> Front / Back
   if (Math.abs(gp.axes[1]) > deadzone) {
     if (gp.axes[1] < 0) {
-      window.jogDirection('front');
+      jogDirection('front');
     } else {
-      window.jogDirection('back');
+      jogDirection('back');
     }
   }
   // Left Stick X (Axes 0) -> Left / Right
   if (Math.abs(gp.axes[0]) > deadzone) {
     if (gp.axes[0] < 0) {
-      window.jogDirection('left');
+      jogDirection('left');
     } else {
-      window.jogDirection('right');
+      jogDirection('right');
     }
   }
   // Right Stick Y (Axes 3) -> Up / Down
   if (Math.abs(gp.axes[3]) > deadzone) {
     if (gp.axes[3] < 0) {
-      window.jogDirection('up');
+      jogDirection('up');
     } else {
-      window.jogDirection('down');
+      jogDirection('down');
     }
   }
   // Right Trigger (7) / Left Trigger (6) -> Gripper Clamp / Open
   if (gp.buttons[7] && gp.buttons[7].pressed) {
-    window.jogDirection('clamp');
+    jogDirection('clamp');
   } else if (gp.buttons[6] && gp.buttons[6].pressed) {
-    window.jogDirection('open');
+    jogDirection('open');
   }
   // Button A (0) -> Home
   if (gp.buttons[0] && gp.buttons[0].pressed) {
@@ -595,21 +649,26 @@ function pollGamepad(dt) {
   }
 }
 
-window.addEventListener("gamepadconnected", (e) => {
-  showToast(`🎮 Gamepad Detected: ${e.gamepad.id.slice(0, 20)}...`);
-});
+if (typeof window !== 'undefined') {
+  window.addEventListener("gamepadconnected", (e) => {
+    showToast(`🎮 Gamepad Detected: ${e.gamepad.id.slice(0, 20)}...`);
+  });
+}
 
 // ====================================================================================
 // FORWARD KINEMATICS & UI SLIDER CONTROLS
 // ====================================================================================
 function initUIEvents() {
+  if (!isBrowser) return;
+
   // Tab Switching
   document.querySelectorAll('.panel-tab').forEach(tab => {
     tab.addEventListener('click', () => {
       document.querySelectorAll('.panel-tab').forEach(t => t.classList.remove('active'));
       document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
       tab.classList.add('active');
-      document.getElementById(tab.dataset.tab).classList.add('active');
+      const target = document.getElementById(tab.dataset.tab);
+      if (target) target.classList.add('active');
     });
   });
 
@@ -638,31 +697,47 @@ function initUIEvents() {
 
   // Speed Slider
   const speedSlider = document.getElementById('slider_speed');
-  speedSlider.addEventListener('input', (e) => {
-    motionSpeed = parseFloat(e.target.value);
-    document.getElementById('val_speed').textContent = motionSpeed;
-    sendJsonCommand({ cmd: "set_speed", speed: motionSpeed });
-  });
+  if (speedSlider) {
+    speedSlider.addEventListener('input', (e) => {
+      motionSpeed = parseFloat(e.target.value);
+      const valSp = document.getElementById('val_speed');
+      if (valSp) valSp.textContent = motionSpeed;
+      sendJsonCommand({ cmd: "set_speed", speed: motionSpeed });
+    });
+  }
 
   // Home Button
-  document.getElementById('btnHome').addEventListener('click', () => applyPreset('home'));
+  const btnHome = document.getElementById('btnHome');
+  if (btnHome) btnHome.addEventListener('click', () => applyPreset('home'));
 
   // Emergency Stop Button
-  document.getElementById('eStopBtn').addEventListener('click', triggerEStop);
+  const eStopBtn = document.getElementById('eStopBtn');
+  if (eStopBtn) eStopBtn.addEventListener('click', triggerEStop);
 
   // Reset Camera View
-  document.getElementById('resetViewBtn').addEventListener('click', () => {
-    camera.position.set(130, 90, 140);
-    controls.target.set(0, 55, 0);
-  });
+  const resetViewBtn = document.getElementById('resetViewBtn');
+  if (resetViewBtn) {
+    resetViewBtn.addEventListener('click', () => {
+      if (camera && controls) {
+        camera.position.set(130, 90, 140);
+        controls.target.set(0, 55, 0);
+      }
+    });
+  }
 
   // Viewport Toggles
-  document.getElementById('btnToggleGrid').addEventListener('click', () => {
-    gridHelper.visible = !gridHelper.visible;
-  });
-  document.getElementById('btnToggleAxes').addEventListener('click', () => {
-    axesHelper.visible = !axesHelper.visible;
-  });
+  const btnToggleGrid = document.getElementById('btnToggleGrid');
+  if (btnToggleGrid) {
+    btnToggleGrid.addEventListener('click', () => {
+      if (gridHelper) gridHelper.visible = !gridHelper.visible;
+    });
+  }
+  const btnToggleAxes = document.getElementById('btnToggleAxes');
+  if (btnToggleAxes) {
+    btnToggleAxes.addEventListener('click', () => {
+      if (axesHelper) axesHelper.visible = !axesHelper.visible;
+    });
+  }
 
   // Connection Mode Tabs (Wi-Fi vs USB Serial)
   const tabWifiBtn = document.getElementById('tabWifiBtn');
@@ -670,52 +745,79 @@ function initUIEvents() {
   const wifiControls = document.getElementById('wifiControls');
   const serialControls = document.getElementById('serialControls');
 
-  tabWifiBtn.addEventListener('click', () => {
-    tabWifiBtn.classList.add('active');
-    tabSerialBtn.classList.remove('active');
-    wifiControls.style.display = 'flex';
-    serialControls.style.display = 'none';
-    connMode = 'wifi';
-  });
+  if (tabWifiBtn && tabSerialBtn && wifiControls && serialControls) {
+    tabWifiBtn.addEventListener('click', () => {
+      tabWifiBtn.classList.add('active');
+      tabSerialBtn.classList.remove('active');
+      wifiControls.style.display = 'flex';
+      serialControls.style.display = 'none';
+      connMode = 'wifi';
+    });
 
-  tabSerialBtn.addEventListener('click', () => {
-    tabSerialBtn.classList.add('active');
-    tabWifiBtn.classList.remove('active');
-    wifiControls.style.display = 'none';
-    serialControls.style.display = 'flex';
-    connMode = 'serial';
-  });
+    tabSerialBtn.addEventListener('click', () => {
+      tabSerialBtn.classList.add('active');
+      tabWifiBtn.classList.remove('active');
+      wifiControls.style.display = 'none';
+      serialControls.style.display = 'flex';
+      connMode = 'serial';
+    });
+  }
 
   // Connect Buttons
-  document.getElementById('connectWifiBtn').addEventListener('click', toggleWifiConnection);
-  document.getElementById('connectSerialBtn').addEventListener('click', toggleSerialConnection);
+  const connectWifiBtn = document.getElementById('connectWifiBtn');
+  if (connectWifiBtn) connectWifiBtn.addEventListener('click', toggleWifiConnection);
+
+  const connectSerialBtn = document.getElementById('connectSerialBtn');
+  if (connectSerialBtn) connectSerialBtn.addEventListener('click', toggleSerialConnection);
 
   // IK Sliders & Compute
-  document.getElementById('slider_ik_x').addEventListener('input', updateIkFromSliders);
-  document.getElementById('slider_ik_y').addEventListener('input', updateIkFromSliders);
-  document.getElementById('slider_ik_z').addEventListener('input', updateIkFromSliders);
-  document.getElementById('slider_ik_pitch').addEventListener('input', updateIkFromSliders);
-  document.getElementById('btnSolveIk').addEventListener('click', applyIkToArm);
-  document.getElementById('btnSyncIk').addEventListener('click', syncIkSlidersFromWorld);
+  const sx = document.getElementById('slider_ik_x');
+  const sy = document.getElementById('slider_ik_y');
+  const sz = document.getElementById('slider_ik_z');
+  const sp = document.getElementById('slider_ik_pitch');
+  if (sx) sx.addEventListener('input', updateIkFromSliders);
+  if (sy) sy.addEventListener('input', updateIkFromSliders);
+  if (sz) sz.addEventListener('input', updateIkFromSliders);
+  if (sp) sp.addEventListener('input', updateIkFromSliders);
+
+  const btnSolveIk = document.getElementById('btnSolveIk');
+  if (btnSolveIk) btnSolveIk.addEventListener('click', applyIkToArm);
+
+  const btnSyncIk = document.getElementById('btnSyncIk');
+  if (btnSyncIk) btnSyncIk.addEventListener('click', syncIkSlidersFromWorld);
 
   // Sequencer Controls
-  document.getElementById('btnAddKeyframe').addEventListener('click', addCurrentPoseAsKeyframe);
-  document.getElementById('btnPlaySeq').addEventListener('click', playSequence);
-  document.getElementById('btnStopSeq').addEventListener('click', stopSequence);
-  document.getElementById('btnClearSeq').addEventListener('click', () => {
-    keyframes = [];
-    renderKeyframesList();
-  });
-  document.getElementById('btnExportSeq').addEventListener('click', exportSequenceJson);
-  document.getElementById('btnImportSeq').addEventListener('click', () => {
-    document.getElementById('seqFileInput').click();
-  });
-  document.getElementById('seqFileInput').addEventListener('change', importSequenceJson);
+  const btnAddKeyframe = document.getElementById('btnAddKeyframe');
+  if (btnAddKeyframe) btnAddKeyframe.addEventListener('click', addCurrentPoseAsKeyframe);
 
-  // Load saved trims from localStorage
-  try {
-    const saved = localStorage.getItem('roboarm_trims');
-    if (saved) {
+  const btnPlaySeq = document.getElementById('btnPlaySeq');
+  if (btnPlaySeq) btnPlaySeq.addEventListener('click', playSequence);
+
+  const btnStopSeq = document.getElementById('btnStopSeq');
+  if (btnStopSeq) btnStopSeq.addEventListener('click', stopSequence);
+
+  const btnClearSeq = document.getElementById('btnClearSeq');
+  if (btnClearSeq) {
+    btnClearSeq.addEventListener('click', () => {
+      keyframes = [];
+      renderKeyframesList();
+    });
+  }
+
+  const btnExportSeq = document.getElementById('btnExportSeq');
+  if (btnExportSeq) btnExportSeq.addEventListener('click', exportSequenceJson);
+
+  const btnImportSeq = document.getElementById('btnImportSeq');
+  const seqFileInput = document.getElementById('seqFileInput');
+  if (btnImportSeq && seqFileInput) {
+    btnImportSeq.addEventListener('click', () => seqFileInput.click());
+    seqFileInput.addEventListener('change', importSequenceJson);
+  }
+
+  // Load saved trims from safeStorage
+  const saved = safeStorage.getItem('roboarm_trims');
+  if (saved) {
+    try {
       jointTrims = JSON.parse(saved);
       for (let i = 0; i < NUM_JOINTS; i++) {
         const slider = document.getElementById(`trim_j${i + 1}`);
@@ -723,8 +825,8 @@ function initUIEvents() {
         if (slider) slider.value = jointTrims[i];
         if (val) val.textContent = jointTrims[i];
       }
-    }
-  } catch (e) {}
+    } catch (e) {}
+  }
 
   // Trim Sliders
   for (let i = 0; i < NUM_JOINTS; i++) {
@@ -750,7 +852,7 @@ function initUIEvents() {
         if (slider) slider.value = 0;
         if (val) val.textContent = 0;
       }
-      localStorage.removeItem('roboarm_trims');
+      safeStorage.removeItem('roboarm_trims');
       showToast("Trims reset to zero.");
       transmitCommandThrottled();
     });
@@ -760,12 +862,8 @@ function initUIEvents() {
   const btnSaveConfig = document.getElementById('btnSaveConfig');
   if (btnSaveConfig) {
     btnSaveConfig.addEventListener('click', () => {
-      try {
-        localStorage.setItem('roboarm_trims', JSON.stringify(jointTrims));
-        showToast("Calibration trims saved to browser memory!");
-      } catch (e) {
-        showToast("Error saving configuration", true);
-      }
+      safeStorage.setItem('roboarm_trims', JSON.stringify(jointTrims));
+      showToast("Calibration trims saved to browser memory!");
     });
   }
 
@@ -773,11 +871,11 @@ function initUIEvents() {
   const bindJog = (id, dir) => {
     const el = document.getElementById(id);
     if (!el) return;
-    el.addEventListener('mousedown', (e) => { e.preventDefault(); window.startContinuousJog(dir); });
-    el.addEventListener('mouseup', window.stopContinuousJog);
-    el.addEventListener('mouseleave', window.stopContinuousJog);
-    el.addEventListener('touchstart', (e) => { e.preventDefault(); window.startContinuousJog(dir); });
-    el.addEventListener('touchend', window.stopContinuousJog);
+    el.addEventListener('mousedown', (e) => { e.preventDefault(); startContinuousJog(dir); });
+    el.addEventListener('mouseup', stopContinuousJog);
+    el.addEventListener('mouseleave', stopContinuousJog);
+    el.addEventListener('touchstart', (e) => { e.preventDefault(); startContinuousJog(dir); });
+    el.addEventListener('touchend', stopContinuousJog);
   };
 
   bindJog('btnJogFront', 'front');
@@ -794,98 +892,94 @@ function initUIEvents() {
     btnJogCenter.addEventListener('click', () => applyPreset('home'));
   }
 
-  // Keyboard Shortcuts (Arrow Keys for Front/Back/Left/Right)
-  window.addEventListener('keydown', (e) => {
-    if (e.target.tagName === 'INPUT') return;
-    const key = e.key.toLowerCase();
+  // Keyboard Shortcuts
+  if (typeof window !== 'undefined') {
+    window.addEventListener('keydown', (e) => {
+      if (e.target && e.target.tagName === 'INPUT') return;
+      const key = e.key ? e.key.toLowerCase() : '';
 
-    // Arrow Keys Jog
-    if (e.key === 'ArrowUp') {
-      e.preventDefault();
-      window.jogDirection('front');
-    } else if (e.key === 'ArrowDown') {
-      e.preventDefault();
-      window.jogDirection('back');
-    } else if (e.key === 'ArrowLeft') {
-      e.preventDefault();
-      window.jogDirection('left');
-    } else if (e.key === 'ArrowRight') {
-      e.preventDefault();
-      window.jogDirection('right');
-    } else if (e.key === 'PageUp' || key === 'u') {
-      e.preventDefault();
-      window.jogDirection('up');
-    } else if (e.key === 'PageDown' || key === 'j') {
-      e.preventDefault();
-      window.jogDirection('down');
-    }
-    // Individual Joint Key Controls
-    else if (key === 'q') stepJoint(0, 3);
-    else if (key === 'a') stepJoint(0, -3);
-    else if (key === 'w') stepJoint(1, 3);
-    else if (key === 's') stepJoint(1, -3);
-    else if (key === 'e') stepJoint(2, 3);
-    else if (key === 'd') stepJoint(2, -3);
-    else if (key === 'r') stepJoint(3, 3);
-    else if (key === 'f') stepJoint(3, -3);
-    else if (e.code === 'Space') {
-      e.preventDefault();
-      targetAngles[4] = (targetAngles[4] > 40) ? 0 : 80;
-      updateAnglesDisplay();
-      transmitCommandThrottled();
-    } else if (key === 'h') {
-      applyPreset('home');
-    } else if (key === 'escape') {
-      triggerEStop();
-    }
-  });
+      // Arrow Keys Jog
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        jogDirection('front');
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        jogDirection('back');
+      } else if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        jogDirection('left');
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        jogDirection('right');
+      } else if (e.key === 'PageUp' || key === 'u') {
+        e.preventDefault();
+        jogDirection('up');
+      } else if (e.key === 'PageDown' || key === 'j') {
+        e.preventDefault();
+        jogDirection('down');
+      }
+      // Individual Joint Key Controls
+      else if (key === 'q') stepJoint(0, 3);
+      else if (key === 'a') stepJoint(0, -3);
+      else if (key === 'w') stepJoint(1, 3);
+      else if (key === 's') stepJoint(1, -3);
+      else if (key === 'e') stepJoint(2, 3);
+      else if (key === 'd') stepJoint(2, -3);
+      else if (key === 'r') stepJoint(3, 3);
+      else if (key === 'f') stepJoint(3, -3);
+      else if (e.code === 'Space') {
+        e.preventDefault();
+        targetAngles[4] = (targetAngles[4] > 40) ? 0 : 80;
+        updateAnglesDisplay();
+        transmitCommandThrottled();
+      } else if (key === 'h') {
+        applyPreset('home');
+      } else if (key === 'escape') {
+        triggerEStop();
+      }
+    });
+  }
 }
 
 // Step joint button handler (+1, -1, +5, -5)
-window.stepJoint = function(index, delta) {
+function stepJoint(index, delta) {
   let val = targetAngles[index] + delta;
   const max = (index === 4) ? 90 : 180;
   val = Math.max(0, Math.min(max, val));
   targetAngles[index] = val;
   updateAnglesDisplay();
   transmitCommandThrottled();
-};
+}
 
-window.setGripper = function(angle) {
+function setGripper(angle) {
   targetAngles[4] = angle;
   updateAnglesDisplay();
   transmitCommandThrottled();
-};
+}
 
 // ====================================================================================
 // DIRECTIONAL JOG SYSTEM (FRONT, BACKWARD, LEFT, RIGHT, UP, DOWN)
 // ====================================================================================
 let jogInterval = null;
 
-window.jogDirection = function(dir) {
+function jogDirection(dir) {
   const step = 2.5;
 
   if (dir === 'front') {
-    // Move front / forward reach: Shoulder pitches forward, elbow extends
     targetAngles[0] = Math.min(180, targetAngles[0] + step);
     targetAngles[1] = Math.max(0, targetAngles[1] - (step * 0.7));
   } else if (dir === 'back') {
-    // Move backward / pull back: Shoulder pitches back, elbow folds
     targetAngles[0] = Math.max(0, targetAngles[0] - step);
     targetAngles[1] = Math.min(180, targetAngles[1] + (step * 0.7));
   } else if (dir === 'left') {
-    // Turn / Roll Left
     targetAngles[3] = Math.max(0, targetAngles[3] - step * 1.5);
   } else if (dir === 'right') {
-    // Turn / Roll Right
     targetAngles[3] = Math.min(180, targetAngles[3] + step * 1.5);
   } else if (dir === 'up') {
-    // Lift arm up
     targetAngles[0] = Math.max(0, targetAngles[0] - step);
     targetAngles[1] = Math.max(0, targetAngles[1] - step);
     targetAngles[2] = Math.min(180, targetAngles[2] + step);
   } else if (dir === 'down') {
-    // Lower arm down
     targetAngles[0] = Math.min(180, targetAngles[0] + step);
     targetAngles[1] = Math.min(180, targetAngles[1] + step);
     targetAngles[2] = Math.max(0, targetAngles[2] - step);
@@ -897,25 +991,26 @@ window.jogDirection = function(dir) {
 
   updateAnglesDisplay();
   transmitCommandThrottled();
-};
+}
 
-window.startContinuousJog = function(dir) {
-  window.stopContinuousJog();
-  window.jogDirection(dir);
+function startContinuousJog(dir) {
+  stopContinuousJog();
+  jogDirection(dir);
   jogInterval = setInterval(() => {
-    window.jogDirection(dir);
+    jogDirection(dir);
   }, 45);
-};
+}
 
-window.stopContinuousJog = function() {
+function stopContinuousJog() {
   if (jogInterval) {
     clearInterval(jogInterval);
     jogInterval = null;
   }
-};
+}
 
 // Update UI values and sliders
 function updateAnglesDisplay() {
+  if (!isBrowser) return;
   for (let i = 0; i < NUM_JOINTS; i++) {
     const valSpan = document.getElementById(`val_j${i + 1}`);
     const slider = document.getElementById(`slider_j${i + 1}`);
@@ -931,18 +1026,17 @@ function updateAnglesDisplay() {
 }
 
 // Apply Preset Pose
-window.applyPreset = function(name) {
+function applyPreset(name) {
   if (PRESETS[name]) {
     targetAngles = [...PRESETS[name]];
     updateAnglesDisplay();
     transmitCommandThrottled();
     showToast(`Applied Preset: ${name.toUpperCase()}`);
   }
-};
+}
 
 // Emergency Stop
 function triggerEStop() {
-  // Halt all motion setpoints to current instantaneous position
   for (let i = 0; i < NUM_JOINTS; i++) {
     targetAngles[i] = currentAngles[i];
   }
@@ -950,7 +1044,7 @@ function triggerEStop() {
   updateAnglesDisplay();
   sendJsonCommand({ cmd: "stop" });
   if (connMode === 'serial' && serialWriter) {
-    serialWriter.write("STOP\n");
+    try { serialWriter.write("STOP\n"); } catch (e) {}
   }
   showToast("EMERGENCY STOP ACTIVATED!", true);
 }
@@ -959,15 +1053,25 @@ function triggerEStop() {
 // INVERSE KINEMATICS (IK SOLVER)
 // ====================================================================================
 function updateIkFromSliders() {
-  const x = parseFloat(document.getElementById('slider_ik_x').value);
-  const y = parseFloat(document.getElementById('slider_ik_y').value);
-  const z = parseFloat(document.getElementById('slider_ik_z').value);
-  const pitch = parseFloat(document.getElementById('slider_ik_pitch').value);
+  if (!isBrowser) return;
+  const sx = document.getElementById('slider_ik_x');
+  const sy = document.getElementById('slider_ik_y');
+  const sz = document.getElementById('slider_ik_z');
+  const sp = document.getElementById('slider_ik_pitch');
 
-  document.getElementById('val_ik_x').textContent = x;
-  document.getElementById('val_ik_y').textContent = y;
-  document.getElementById('val_ik_z').textContent = z;
-  document.getElementById('val_ik_pitch').textContent = pitch;
+  const x = sx ? parseFloat(sx.value) : 35;
+  const y = sy ? parseFloat(sy.value) : 60;
+  const z = sz ? parseFloat(sz.value) : 0;
+  const pitch = sp ? parseFloat(sp.value) : 0;
+
+  const vx = document.getElementById('val_ik_x');
+  const vy = document.getElementById('val_ik_y');
+  const vz = document.getElementById('val_ik_z');
+  const vp = document.getElementById('val_ik_pitch');
+  if (vx) vx.textContent = x;
+  if (vy) vy.textContent = y;
+  if (vz) vz.textContent = z;
+  if (vp) vp.textContent = pitch;
 
   // Move 3D Target Mesh
   if (ikTargetMesh) {
@@ -978,13 +1082,16 @@ function updateIkFromSliders() {
 }
 
 function syncIkSlidersFromWorld() {
-  if (!robotArm.endEffectorNode) return;
+  if (!isBrowser || !robotArm.endEffectorNode) return;
   const worldPos = new THREE.Vector3();
   robotArm.endEffectorNode.getWorldPosition(worldPos);
 
-  document.getElementById('slider_ik_x').value = Math.round(worldPos.x);
-  document.getElementById('slider_ik_y').value = Math.round(worldPos.y);
-  document.getElementById('slider_ik_z').value = Math.round(worldPos.z);
+  const sx = document.getElementById('slider_ik_x');
+  const sy = document.getElementById('slider_ik_y');
+  const sz = document.getElementById('slider_ik_z');
+  if (sx) sx.value = Math.round(worldPos.x);
+  if (sy) sy.value = Math.round(worldPos.y);
+  if (sz) sz.value = Math.round(worldPos.z);
   updateIkFromSliders();
 }
 
@@ -993,40 +1100,42 @@ function solveAnalyticalIK(targetX, targetY, targetZ, wristPitchDeg, apply = fal
   const L2 = DIM.link2Length; // 40 cm
   const baseH = DIM.baseHeight + 4.3;
 
-  // Height relative to shoulder joint
   const dy = targetY - baseH;
   const r = Math.sqrt(targetX * targetX + targetZ * targetZ);
 
-  // 2-Link planar distance from shoulder to wrist
   const D = Math.sqrt(r * r + dy * dy);
-  const notice = document.getElementById('ikResultNotice');
+  const notice = isBrowser ? document.getElementById('ikResultNotice') : null;
 
   // Reach check
   if (D > (L1 + L2) * 0.98 || D < Math.abs(L1 - L2) * 1.05) {
-    notice.textContent = "Out of Reach Workspace";
-    notice.style.color = "#f87171";
-    notice.style.background = "rgba(239, 68, 68, 0.15)";
+    if (notice) {
+      notice.textContent = "Out of Reach Workspace";
+      notice.style.color = "#f87171";
+      notice.style.background = "rgba(239, 68, 68, 0.15)";
+    }
     return false;
   } else {
-    notice.textContent = "Target Reachable (Valid Solution)";
-    notice.style.color = "#34d399";
-    notice.style.background = "rgba(16, 185, 129, 0.15)";
+    if (notice) {
+      notice.textContent = "Target Reachable (Valid Solution)";
+      notice.style.color = "#34d399";
+      notice.style.background = "rgba(16, 185, 129, 0.15)";
+    }
   }
 
-  // Law of Cosines for elbow angle (theta2)
+  // Law of Cosines for elbow angle
   const cosElbow = (L1 * L1 + L2 * L2 - D * D) / (2 * L1 * L2);
   const theta2Rad = Math.PI - Math.acos(Math.max(-1, Math.min(1, cosElbow)));
 
-  // Shoulder angle (theta1)
+  // Shoulder angle
   const alpha = Math.atan2(dy, r);
-  const beta = Math.acos((L1 * L1 + D * D - L2 * L2) / (2 * L1 * D));
+  const beta = Math.acos(Math.max(-1, Math.min(1, (L1 * L1 + D * D - L2 * L2) / (2 * L1 * D))));
   const theta1Rad = alpha + beta;
 
-  // Convert to servo degrees (90 is upright)
+  // Convert to servo degrees
   let j1 = Math.round((Math.PI / 2 - theta1Rad) * (180 / Math.PI) + 90);
   let j2 = Math.round(180 - (theta2Rad * (180 / Math.PI)));
   let j3 = Math.round(90 + wristPitchDeg);
-  let j4 = 90; // Centered roll
+  let j4 = 90;
 
   j1 = Math.max(0, Math.min(180, j1));
   j2 = Math.max(0, Math.min(180, j2));
@@ -1046,10 +1155,15 @@ function solveAnalyticalIK(targetX, targetY, targetZ, wristPitchDeg, apply = fal
 }
 
 function applyIkToArm() {
-  const x = parseFloat(document.getElementById('slider_ik_x').value);
-  const y = parseFloat(document.getElementById('slider_ik_y').value);
-  const z = parseFloat(document.getElementById('slider_ik_z').value);
-  const pitch = parseFloat(document.getElementById('slider_ik_pitch').value);
+  if (!isBrowser) return;
+  const sx = document.getElementById('slider_ik_x');
+  const sy = document.getElementById('slider_ik_y');
+  const sz = document.getElementById('slider_ik_z');
+  const sp = document.getElementById('slider_ik_pitch');
+  const x = sx ? parseFloat(sx.value) : 35;
+  const y = sy ? parseFloat(sy.value) : 60;
+  const z = sz ? parseFloat(sz.value) : 0;
+  const pitch = sp ? parseFloat(sp.value) : 0;
   solveAnalyticalIK(x, y, z, pitch, true);
 }
 
@@ -1057,7 +1171,9 @@ function applyIkToArm() {
 // MOTION SEQUENCER & KEYFRAME RECORDER
 // ====================================================================================
 function renderKeyframesList() {
+  if (!isBrowser) return;
   const container = document.getElementById('keyframeList');
+  if (!container) return;
   container.innerHTML = '';
 
   keyframes.forEach((kf, idx) => {
@@ -1088,18 +1204,18 @@ function addCurrentPoseAsKeyframe() {
   showToast(`Recorded: ${name}`);
 }
 
-window.deleteKeyframe = function(idx) {
+function deleteKeyframe(idx) {
   keyframes.splice(idx, 1);
   renderKeyframesList();
-};
+}
 
-window.testKeyframe = function(idx) {
+function testKeyframe(idx) {
   if (keyframes[idx]) {
     targetAngles = [...keyframes[idx].angles];
     updateAnglesDisplay();
     transmitCommandThrottled();
   }
-};
+}
 
 function playSequence() {
   if (keyframes.length === 0) {
@@ -1121,7 +1237,8 @@ function executeNextKeyframe() {
   if (!isPlayingSeq) return;
 
   if (seqIndex >= keyframes.length) {
-    const isLoop = document.getElementById('seqLoop').checked;
+    const loopEl = isBrowser ? document.getElementById('seqLoop') : null;
+    const isLoop = loopEl ? loopEl.checked : false;
     if (isLoop) {
       seqIndex = 0;
     } else {
@@ -1144,6 +1261,7 @@ function executeNextKeyframe() {
 }
 
 function exportSequenceJson() {
+  if (!isBrowser) return;
   const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(keyframes, null, 2));
   const dlAnchor = document.createElement('a');
   dlAnchor.setAttribute("href", dataStr);
@@ -1152,6 +1270,7 @@ function exportSequenceJson() {
 }
 
 function importSequenceJson(e) {
+  if (!isBrowser || !e.target.files) return;
   const file = e.target.files[0];
   if (!file) return;
   const reader = new FileReader();
@@ -1173,10 +1292,8 @@ function importSequenceJson(e) {
 // ====================================================================================
 // HARDWARE COMMUNICATION: WEBSOCKET & WEB SERIAL API
 // ====================================================================================
-
-// Throttled sender to keep from congesting the serial or network pipeline
 function transmitCommandThrottled() {
-  const now = performance.now();
+  const now = getNow();
   if (now - lastSendTime < 35) return; // 30Hz limit
   lastSendTime = now;
 
@@ -1207,22 +1324,26 @@ function transmitCommandThrottled() {
 }
 
 function sendJsonCommand(obj) {
-  if (ws && ws.readyState === WebSocket.OPEN) {
+  if (typeof WebSocket !== 'undefined' && ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(obj));
   }
 }
 
 // --- WebSocket Handler ---
 function toggleWifiConnection() {
+  if (!isBrowser) return;
+
   if (ws) {
     ws.close();
     ws = null;
     updateConnStatus(false);
-    document.getElementById('connectWifiBtn').innerHTML = `<i class="fa-solid fa-link"></i> Connect`;
+    const btn = document.getElementById('connectWifiBtn');
+    if (btn) btn.innerHTML = `<i class="fa-solid fa-link"></i> Connect`;
     return;
   }
 
-  const ip = document.getElementById('espIpInput').value.trim();
+  const ipEl = document.getElementById('espIpInput');
+  const ip = ipEl ? ipEl.value.trim() : '';
   if (!ip) {
     showToast("Enter a valid IP Address", true);
     return;
@@ -1236,25 +1357,23 @@ function toggleWifiConnection() {
 
     ws.onopen = () => {
       updateConnStatus(true, `Connected (WS @ ${ip})`);
-      document.getElementById('connectWifiBtn').innerHTML = `<i class="fa-solid fa-unlink"></i> Disconnect`;
+      const btn = document.getElementById('connectWifiBtn');
+      if (btn) btn.innerHTML = `<i class="fa-solid fa-unlink"></i> Disconnect`;
       showToast("ESP8266 Connected via Wi-Fi!");
-      // Request initial status
       sendJsonCommand({ cmd: "get_status" });
-      pingStartTime = performance.now();
+      pingStartTime = getNow();
     };
 
     ws.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data);
         if (msg.type === "telemetry" && msg.current) {
-          // Calculate roundtrip latency
-          const latency = Math.round(performance.now() - pingStartTime);
-          document.getElementById('latencyBadge').textContent = `${Math.min(latency, 99)} ms`;
-          pingStartTime = performance.now();
+          const latency = Math.round(getNow() - pingStartTime);
+          const badge = document.getElementById('latencyBadge');
+          if (badge) badge.textContent = `${Math.min(latency, 99)} ms`;
+          pingStartTime = getNow();
         }
-      } catch (err) {
-        // Raw message
-      }
+      } catch (err) {}
     };
 
     ws.onerror = (err) => {
@@ -1265,7 +1384,8 @@ function toggleWifiConnection() {
     ws.onclose = () => {
       ws = null;
       updateConnStatus(false);
-      document.getElementById('connectWifiBtn').innerHTML = `<i class="fa-solid fa-link"></i> Connect`;
+      const btn = document.getElementById('connectWifiBtn');
+      if (btn) btn.innerHTML = `<i class="fa-solid fa-link"></i> Connect`;
       showToast("ESP8266 Disconnected");
     };
 
@@ -1277,6 +1397,8 @@ function toggleWifiConnection() {
 
 // --- Web Serial API Handler (USB Cable Direct) ---
 async function toggleSerialConnection() {
+  if (!isBrowser) return;
+
   if (serialPort) {
     try {
       if (serialReader) await serialReader.cancel();
@@ -1287,12 +1409,13 @@ async function toggleSerialConnection() {
     serialWriter = null;
     serialReader = null;
     updateConnStatus(false);
-    document.getElementById('connectSerialBtn').innerHTML = `<i class="fa-solid fa-bolt"></i> Connect USB Port`;
+    const btn = document.getElementById('connectSerialBtn');
+    if (btn) btn.innerHTML = `<i class="fa-solid fa-bolt"></i> Connect USB Port`;
     showToast("USB Port Disconnected");
     return;
   }
 
-  if (!("serial" in navigator)) {
+  if (typeof navigator === 'undefined' || !("serial" in navigator)) {
     showToast("Web Serial is not supported in this browser. Use Chrome or Edge!", true);
     return;
   }
@@ -1306,10 +1429,10 @@ async function toggleSerialConnection() {
     serialWriter = textEncoder.writable.getWriter();
 
     updateConnStatus(true, "Connected (USB Serial @ 115200)");
-    document.getElementById('connectSerialBtn').innerHTML = `<i class="fa-solid fa-unlink"></i> Disconnect Port`;
+    const btn = document.getElementById('connectSerialBtn');
+    if (btn) btn.innerHTML = `<i class="fa-solid fa-unlink"></i> Disconnect Port`;
     showToast("USB Serial Port Connected!");
 
-    // Start reading serial
     readSerialLoop();
 
   } catch (err) {
@@ -1319,50 +1442,75 @@ async function toggleSerialConnection() {
 }
 
 async function readSerialLoop() {
-  while (serialPort && serialPort.readable) {
-    const textDecoder = new TextDecoderStream();
-    const readableStreamClosed = serialPort.readable.pipeTo(textDecoder.writable);
-    serialReader = textDecoder.readable.getReader();
+  if (!isBrowser || !serialPort || !serialPort.readable) return;
+  const textDecoder = new TextDecoderStream();
+  serialPort.readable.pipeTo(textDecoder.writable);
+  serialReader = textDecoder.readable.getReader();
 
-    try {
-      while (true) {
-        const { value, done } = await serialReader.read();
-        if (done) break;
-        if (value) {
-          // incoming serial data (logs/telemetry)
-        }
-      }
-    } catch (error) {
-      console.warn("Serial read loop closed:", error);
-    } finally {
-      serialReader.releaseLock();
+  try {
+    while (true) {
+      const { value, done } = await serialReader.read();
+      if (done) break;
     }
+  } catch (error) {
+    console.warn("Serial read loop closed:", error);
+  } finally {
+    if (serialReader) serialReader.releaseLock();
   }
 }
 
 function updateConnStatus(connected, text = "Disconnected (Sim Only)") {
+  if (!isBrowser) return;
   isConnected = connected;
   const led = document.getElementById('statusLed');
   const txt = document.getElementById('statusText');
   const badge = document.getElementById('latencyBadge');
 
   if (connected) {
-    led.className = "led connected";
-    txt.textContent = text;
-    badge.textContent = "Online";
+    if (led) led.className = "led connected";
+    if (txt) txt.textContent = text;
+    if (badge) badge.textContent = "Online";
   } else {
-    led.className = "led disconnected";
-    txt.textContent = "Disconnected (Sim Only)";
-    badge.textContent = "-- ms";
+    if (led) led.className = "led disconnected";
+    if (txt) txt.textContent = "Disconnected (Sim Only)";
+    if (badge) badge.textContent = "-- ms";
   }
 }
 
 // Notification Toast Utility
 function showToast(msg, isError = false) {
+  if (!isBrowser) return;
   const toast = document.getElementById('toast');
+  if (!toast) return;
   toast.textContent = msg;
   toast.style.borderColor = isError ? "#ef4444" : "#38bdf8";
   toast.classList.add('show');
   setTimeout(() => toast.classList.remove('show'), 2800);
 }
 
+// Expose public functions to global scope for HTML onclick bindings
+globalScope.stepJoint = stepJoint;
+globalScope.setGripper = setGripper;
+globalScope.jogDirection = jogDirection;
+globalScope.startContinuousJog = startContinuousJog;
+globalScope.stopContinuousJog = stopContinuousJog;
+globalScope.applyPreset = applyPreset;
+globalScope.deleteKeyframe = deleteKeyframe;
+globalScope.testKeyframe = testKeyframe;
+
+// Node.js CommonJS Module Export
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    NUM_JOINTS,
+    targetAngles,
+    currentAngles,
+    motionSpeed,
+    PRESETS,
+    DIM,
+    stepJoint,
+    setGripper,
+    jogDirection,
+    applyPreset,
+    solveAnalyticalIK
+  };
+}

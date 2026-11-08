@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>5-DOF Robotic Arm | Live 3D Simulation & Controller</title>
+  <link rel="stylesheet" href="style.css">
+  <!-- Google Fonts & FontAwesome Icons -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <!-- Three.js & Controls -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/TransformControls.js"></script>
+</head>
+<body>
+
+  <!-- Top Navigation & Telemetry Bar -->
+  <header class="top-nav">
+    <div class="brand">
+      <div class="logo-icon"><i class="fa-solid fa-robot"></i></div>
+      <div class="brand-text">
+        <span class="title">TITAN-ARM 5-DOF</span>
+        <span class="subtitle">3x 150kg + 2x MG996R | ESP8266 Live Hub</span>
+      </div>
+    </div>
+
+    <!-- Connection Status Bar -->
+    <div class="connection-group">
+      <!-- Connection Mode Selector -->
+      <div class="tab-pills">
+        <button id="tabWifiBtn" class="pill-btn active"><i class="fa-solid fa-wifi"></i> Wi-Fi / WS</button>
+        <button id="tabSerialBtn" class="pill-btn"><i class="fa-brands fa-usb"></i> USB Serial</button>
+      </div>
+
+      <!-- Wi-Fi Inputs -->
+      <div id="wifiControls" class="conn-inputs">
+        <input type="text" id="espIpInput" value="192.168.1.100" placeholder="ESP8266 IP (e.g. 192.168.1.50)">
+        <button id="connectWifiBtn" class="btn btn-primary"><i class="fa-solid fa-link"></i> Connect</button>
+      </div>
+
+      <!-- USB Serial Inputs -->
+      <div id="serialControls" class="conn-inputs" style="display: none;">
+        <button id="connectSerialBtn" class="btn btn-primary"><i class="fa-solid fa-bolt"></i> Connect USB Port</button>
+      </div>
+
+      <!-- Connection Status Indicator -->
+      <div class="status-indicator">
+        <span id="statusLed" class="led disconnected"></span>
+        <span id="statusText">Disconnected (Sim Only)</span>
+        <span id="latencyBadge" class="badge">-- ms</span>
+      </div>
+    </div>
+
+    <!-- Header Actions -->
+    <div class="header-actions">
+      <button id="eStopBtn" class="btn btn-danger"><i class="fa-solid fa-hand"></i> E-STOP</button>
+      <button id="resetViewBtn" class="btn btn-icon" title="Reset Camera View"><i class="fa-solid fa-video"></i></button>
+    </div>
+  </header>
+
+  <!-- Main Workspace -->
+  <main class="workspace-container">
+    
+    <!-- Left Sidebar: Joint Sliders & Kinematic Controls -->
+    <aside class="sidebar control-panel">
+      
+      <!-- Mode Tabs: FK (Joints) vs IK (Cartesian) vs Sequencer -->
+      <div class="panel-tabs">
+        <button class="panel-tab active" data-tab="fk-tab"><i class="fa-solid fa-sliders"></i> Joints</button>
+        <button class="panel-tab" data-tab="ik-tab"><i class="fa-solid fa-crosshairs"></i> Target (IK)</button>
+        <button class="panel-tab" data-tab="seq-tab"><i class="fa-solid fa-film"></i> Sequence</button>
+        <button class="panel-tab" data-tab="cal-tab"><i class="fa-solid fa-wrench"></i> Trims &amp; Keys</button>
+      </div>
+
+      <!-- TAB 1: Forward Kinematics (Joint Angle Sliders) -->
+      <div id="fk-tab" class="tab-content active">
+        
+        <!-- Directional Jog Quick Card (Front, Backward, Left, Right) -->
+        <div class="jog-sidebar-card">
+          <div class="section-title">
+            <span>Directional Controls</span>
+            <span class="badge badge-pink">Front / Back / L / R</span>
+          </div>
+          <div class="jog-button-grid">
+            <button class="jog-grid-btn jog-front" onmousedown="startContinuousJog('front')" onmouseup="stopContinuousJog()" onmouseleave="stopContinuousJog()" ontouchstart="startContinuousJog('front')" ontouchend="stopContinuousJog()">
+              <i class="fa-solid fa-arrow-up"></i> FRONT
+            </button>
+            <div class="jog-lr-row">
+              <button class="jog-grid-btn jog-left" onmousedown="startContinuousJog('left')" onmouseup="stopContinuousJog()" onmouseleave="stopContinuousJog()" ontouchstart="startContinuousJog('left')" ontouchend="stopContinuousJog()">
+                <i class="fa-solid fa-arrow-left"></i> LEFT
+              </button>
+              <button class="jog-grid-btn jog-home" onclick="applyPreset('home')" title="Home (90°)">
+                <i class="fa-solid fa-house"></i>
+              </button>
+              <button class="jog-grid-btn jog-right" onmousedown="startContinuousJog('right')" onmouseup="stopContinuousJog()" onmouseleave="stopContinuousJog()" ontouchstart="startContinuousJog('right')" ontouchend="stopContinuousJog()">
+                RIGHT <i class="fa-solid fa-arrow-right"></i>
+              </button>
+            </div>
+            <button class="jog-grid-btn jog-back" onmousedown="startContinuousJog('back')" onmouseup="stopContinuousJog()" onmouseleave="stopContinuousJog()" ontouchstart="startContinuousJog('back')" ontouchend="stopContinuousJog()">
+              <i class="fa-solid fa-arrow-down"></i> BACKWARD
+            </button>
+          </div>
+          <div class="jog-z-row">
+            <button class="jog-grid-btn" onmousedown="startContinuousJog('up')" onmouseup="stopContinuousJog()" onmouseleave="stopContinuousJog()" ontouchstart="startContinuousJog('up')" ontouchend="stopContinuousJog()">
+              <i class="fa-solid fa-angles-up"></i> UP
+            </button>
+            <button class="jog-grid-btn" onmousedown="startContinuousJog('down')" onmouseup="stopContinuousJog()" onmouseleave="stopContinuousJog()" ontouchstart="startContinuousJog('down')" ontouchend="stopContinuousJog()">
+              <i class="fa-solid fa-angles-down"></i> DOWN
+            </button>
+          </div>
+        </div>
+
+        <div class="section-title">
+          <span>Physical Joint Actuators</span>
+          <button id="btnHome" class="btn btn-sm btn-outline"><i class="fa-solid fa-house"></i> Home (All 90°)</button>
+        </div>
+
+        <!-- Joint 1: Base Pitch / Shoulder (150kg) -->
+        <div class="joint-card">
+          <div class="joint-header">
+            <div class="joint-tag"><span class="badge badge-pink">150 kg</span> J1: Base Pitch / Shoulder</div>
+            <div class="joint-value"><span id="val_j1">90</span>°</div>
+          </div>
+          <div class="slider-row">
+            <button class="step-btn" onclick="stepJoint(0, -5)">-5</button>
+            <button class="step-btn" onclick="stepJoint(0, -1)">-1</button>
+            <input type="range" id="slider_j1" class="slider slider-pink" min="0" max="180" value="90">
+            <button class="step-btn" onclick="stepJoint(0, +1)">+1</button>
+            <button class="step-btn" onclick="stepJoint(0, +5)">+5</button>
+          </div>
+          <div class="joint-footer">
+            <span>Range: 0° - 180°</span>
+            <label class="invert-label"><input type="checkbox" id="inv_j1"> Invert</label>
+          </div>
+        </div>
+
+        <!-- Joint 2: Elbow Pitch (150kg) -->
+        <div class="joint-card">
+          <div class="joint-header">
+            <div class="joint-tag"><span class="badge badge-pink">150 kg</span> J2: Elbow Pitch</div>
+            <div class="joint-value"><span id="val_j2">90</span>°</div>
+          </div>
+          <div class="slider-row">
+            <button class="step-btn" onclick="stepJoint(1, -5)">-5</button>
+            <button class="step-btn" onclick="stepJoint(1, -1)">-1</button>
+            <input type="range" id="slider_j2" class="slider slider-pink" min="0" max="180" value="90">
+            <button class="step-btn" onclick="stepJoint(1, +1)">+1</button>
+            <button class="step-btn" onclick="stepJoint(1, +5)">+5</button>
+          </div>
+          <div class="joint-footer">
+            <span>Range: 0° - 180°</span>
+            <label class="invert-label"><input type="checkbox" id="inv_j2"> Invert</label>
+          </div>
+        </div>
+
+        <!-- Joint 3: Wrist Pitch (150kg) -->
+        <div class="joint-card">
+          <div class="joint-header">
+            <div class="joint-tag"><span class="badge badge-pink">150 kg</span> J3: Wrist Pitch</div>
+            <div class="joint-value"><span id="val_j3">90</span>°</div>
+          </div>
+          <div class="slider-row">
+            <button class="step-btn" onclick="stepJoint(2, -5)">-5</button>
+            <button class="step-btn" onclick="stepJoint(2, -1)">-1</button>
+            <input type="range" id="slider_j3" class="slider slider-pink" min="0" max="180" value="90">
+            <button class="step-btn" onclick="stepJoint(2, +1)">+1</button>
+            <button class="step-btn" onclick="stepJoint(2, +5)">+5</button>
+          </div>
+          <div class="joint-footer">
+            <span>Range: 0° - 180°</span>
+            <label class="invert-label"><input type="checkbox" id="inv_j3"> Invert</label>
+          </div>
+        </div>
+
+        <!-- Joint 4: Wrist Roll / Yaw (MG996R) -->
+        <div class="joint-card">
+          <div class="joint-header">
+            <div class="joint-tag"><span class="badge badge-blue">MG996R</span> J4: Wrist Roll / Yaw</div>
+            <div class="joint-value"><span id="val_j4">90</span>°</div>
+          </div>
+          <div class="slider-row">
+            <button class="step-btn" onclick="stepJoint(3, -5)">-5</button>
+            <button class="step-btn" onclick="stepJoint(3, -1)">-1</button>
+            <input type="range" id="slider_j4" class="slider slider-blue" min="0" max="180" value="90">
+            <button class="step-btn" onclick="stepJoint(3, +1)">+1</button>
+            <button class="step-btn" onclick="stepJoint(3, +5)">+5</button>
+          </div>
+          <div class="joint-footer">
+            <span>Range: 0° - 180°</span>
+            <label class="invert-label"><input type="checkbox" id="inv_j4"> Invert</label>
+          </div>
+        </div>
+
+        <!-- Joint 5: Gripper Claw (MG996R) -->
+        <div class="joint-card">
+          <div class="joint-header">
+            <div class="joint-tag"><span class="badge badge-green">MG996R</span> J5: Gripper Claw</div>
+            <div class="joint-value"><span id="val_j5">20</span>° <small id="gripperStateText">(Closed)</small></div>
+          </div>
+          <div class="slider-row">
+            <button class="step-btn" onclick="stepJoint(4, -10)">-10</button>
+            <input type="range" id="slider_j5" class="slider slider-green" min="0" max="90" value="20">
+            <button class="step-btn" onclick="stepJoint(4, +10)">+10</button>
+          </div>
+          <div class="gripper-quick-buttons">
+            <button class="btn btn-sm btn-outline" onclick="setGripper(0)"><i class="fa-solid fa-angles-down"></i> Full Clamp</button>
+            <button class="btn btn-sm btn-outline" onclick="setGripper(45)"><i class="fa-solid fa-hand-scissors"></i> Half Open</button>
+            <button class="btn btn-sm btn-outline" onclick="setGripper(90)"><i class="fa-solid fa-hand"></i> Full Open</button>
+          </div>
+        </div>
+
+        <!-- Motion Speed & Presets -->
+        <div class="config-card">
+          <div class="section-title"><span>Motion Easing Speed</span> <span id="val_speed">40</span> °/s</div>
+          <input type="range" id="slider_speed" class="slider" min="10" max="120" value="40">
+          <div class="speed-hint">Protects 150kg gears and prevents current surges</div>
+        </div>
+
+        <!-- Poses Presets -->
+        <div class="presets-card">
+          <div class="section-title">Pose Presets</div>
+          <div class="preset-grid">
+            <button class="preset-btn" onclick="applyPreset('home')"><i class="fa-solid fa-arrow-up"></i> Upright (90°)</button>
+            <button class="preset-btn" onclick="applyPreset('rest')"><i class="fa-solid fa-compress"></i> Rest / Folded</button>
+            <button class="preset-btn" onclick="applyPreset('reach')"><i class="fa-solid fa-arrow-right"></i> Forward Reach</button>
+            <button class="preset-btn" onclick="applyPreset('pick')"><i class="fa-solid fa-arrow-down"></i> Floor Pick</button>
+            <button class="preset-btn" onclick="applyPreset('wave')"><i class="fa-solid fa-hand-wave"></i> High Salute</button>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- TAB 2: Inverse Kinematics (IK 3D Cartesian Coordinates) -->
+      <div id="ik-tab" class="tab-content">
+        <div class="section-title">
+          <span>End-Effector Target (X, Y, Z)</span>
+          <button id="btnSyncIk" class="btn btn-sm btn-outline">Sync with Current</button>
+        </div>
+        <p class="tab-hint">Drag sliders or the 3D target sphere to dynamically solve joint angles using analytical kinematics.</p>
+        
+        <div class="ik-slider-card">
+          <div class="joint-header"><span>Target X (Reach Forward/Back)</span> <span id="val_ik_x">0</span> cm</div>
+          <input type="range" id="slider_ik_x" class="slider" min="-80" max="80" value="35">
+        </div>
+
+        <div class="ik-slider-card">
+          <div class="joint-header"><span>Target Y (Height Up/Down)</span> <span id="val_ik_y">60</span> cm</div>
+          <input type="range" id="slider_ik_y" class="slider" min="10" max="110" value="60">
+        </div>
+
+        <div class="ik-slider-card">
+          <div class="joint-header"><span>Target Z (Lateral Left/Right)</span> <span id="val_ik_z">0</span> cm</div>
+          <input type="range" id="slider_ik_z" class="slider" min="-50" max="50" value="0">
+        </div>
+
+        <div class="ik-slider-card">
+          <div class="joint-header"><span>Wrist Angle Orientation</span> <span id="val_ik_pitch">0</span>°</div>
+          <input type="range" id="slider_ik_pitch" class="slider" min="-90" max="90" value="0">
+        </div>
+
+        <button id="btnSolveIk" class="btn btn-primary btn-block"><i class="fa-solid fa-calculator"></i> Compute &amp; Apply IK</button>
+        <div id="ikResultNotice" class="ik-notice">Target Reachable</div>
+      </div>
+
+      <!-- TAB 3: Sequence Choreographer (Keyframe Recorder) -->
+      <div id="seq-tab" class="tab-content">
+        <div class="section-title">
+          <span>Keyframe Motion Sequencer</span>
+          <button id="btnAddKeyframe" class="btn btn-sm btn-primary"><i class="fa-solid fa-plus"></i> Add Frame</button>
+        </div>
+        <p class="tab-hint">Record positions, set pause delays, and loop pick-and-place routines on both 3D &amp; real arm.</p>
+
+        <div class="seq-controls">
+          <button id="btnPlaySeq" class="btn btn-success"><i class="fa-solid fa-play"></i> Run</button>
+          <button id="btnStopSeq" class="btn btn-secondary"><i class="fa-solid fa-pause"></i> Pause</button>
+          <button id="btnClearSeq" class="btn btn-outline"><i class="fa-solid fa-trash"></i> Clear</button>
+          <label class="loop-checkbox"><input type="checkbox" id="seqLoop" checked> Loop</label>
+        </div>
+
+        <!-- Keyframes List -->
+        <div id="keyframeList" class="keyframe-list">
+          <!-- Populated dynamically via JS -->
+        </div>
+
+        <div class="seq-export-row">
+          <button id="btnExportSeq" class="btn btn-sm btn-outline"><i class="fa-solid fa-download"></i> Export JSON</button>
+          <button id="btnImportSeq" class="btn btn-sm btn-outline"><i class="fa-solid fa-upload"></i> Import</button>
+          <input type="file" id="seqFileInput" accept=".json" style="display:none;">
+        </div>
+      </div>
+
+      <!-- TAB 4: Calibration Trims & Hotkey Guide -->
+      <div id="cal-tab" class="tab-content">
+        <div class="section-title">
+          <span>Servo Horn Trims (±30°)</span>
+          <button id="btnResetTrims" class="btn btn-sm btn-outline">Reset Trims</button>
+        </div>
+        <p class="tab-hint">Compensate for spline tooth misalignment so your physical arm matches the 3D model exactly.</p>
+
+        <div class="joint-card">
+          <div class="joint-header"><span>J1 Base Trim:</span> <span id="val_trim_1">0</span>°</div>
+          <input type="range" id="trim_j1" class="slider" min="-30" max="30" value="0">
+        </div>
+
+        <div class="joint-card">
+          <div class="joint-header"><span>J2 Elbow Trim:</span> <span id="val_trim_2">0</span>°</div>
+          <input type="range" id="trim_j2" class="slider" min="-30" max="30" value="0">
+        </div>
+
+        <div class="joint-card">
+          <div class="joint-header"><span>J3 Wrist Trim:</span> <span id="val_trim_3">0</span>°</div>
+          <input type="range" id="trim_j3" class="slider" min="-30" max="30" value="0">
+        </div>
+
+        <div class="joint-card">
+          <div class="joint-header"><span>J4 Roll Trim:</span> <span id="val_trim_4">0</span>°</div>
+          <input type="range" id="trim_j4" class="slider" min="-30" max="30" value="0">
+        </div>
+
+        <div class="joint-card">
+          <div class="joint-header"><span>J5 Gripper Trim:</span> <span id="val_trim_5">0</span>°</div>
+          <input type="range" id="trim_j5" class="slider" min="-30" max="30" value="0">
+        </div>
+
+        <!-- Hotkeys Cheatsheet -->
+        <div class="config-card">
+          <div class="section-title"><span>Keyboard &amp; Gamepad Controls</span></div>
+          <div class="hotkey-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:0.75rem;font-family:var(--font-mono);">
+            <div><kbd class="badge">Q / A</kbd> Base Up/Down</div>
+            <div><kbd class="badge">W / S</kbd> Elbow Up/Dn</div>
+            <div><kbd class="badge">E / D</kbd> Wrist Up/Dn</div>
+            <div><kbd class="badge">R / F</kbd> Roll L/R</div>
+            <div><kbd class="badge">Space</kbd> Grip Toggle</div>
+            <div><kbd class="badge">H</kbd> Home (90°)</div>
+            <div><kbd class="badge">Esc</kbd> Emergency Stop</div>
+            <div><kbd class="badge">🎮 Pad</kbd> Auto-Detected</div>
+          </div>
+        </div>
+
+        <button id="btnSaveConfig" class="btn btn-primary btn-block"><i class="fa-solid fa-floppy-disk"></i> Save Calibration to Memory</button>
+      </div>
+
+    </aside>
+
+    <!-- Center/Right: 3D Canvas Viewport -->
+    <div class="viewport-wrapper">
+      <div id="canvas-container"></div>
+      
+      <!-- On-Screen Directional Jog Controller (Pendant) -->
+      <div class="hud-overlay jog-pendant">
+        <div class="pendant-box">
+          <div class="pendant-header">
+            <span><i class="fa-solid fa-gamepad"></i> DIRECTIONAL CONTROLS</span>
+            <div class="pendant-tag"><span class="badge badge-blue">FRONT / BACK / L / R</span></div>
+          </div>
+          
+          <div class="pendant-body">
+            <!-- 4-Way Directional D-Pad (Front, Backward, Left, Right) -->
+            <div class="dpad-container">
+              <button id="btnJogFront" class="dpad-btn dpad-up" title="Move Front / Forward (Arrow Up)">
+                <i class="fa-solid fa-chevron-up"></i>
+                <span>FRONT</span>
+              </button>
+              
+              <div class="dpad-middle-row">
+                <button id="btnJogLeft" class="dpad-btn dpad-left" title="Move Left (Arrow Left)">
+                  <i class="fa-solid fa-chevron-left"></i>
+                  <span>LEFT</span>
+                </button>
+                
+                <button id="btnJogCenter" class="dpad-btn dpad-center" title="Home Pose (H)">
+                  <i class="fa-solid fa-house"></i>
+                </button>
+                
+                <button id="btnJogRight" class="dpad-btn dpad-right" title="Move Right (Arrow Right)">
+                  <span>RIGHT</span>
+                  <i class="fa-solid fa-chevron-right"></i>
+                </button>
+              </div>
+              
+              <button id="btnJogBack" class="dpad-btn dpad-down" title="Move Backward (Arrow Down)">
+                <span>BACKWARD</span>
+                <i class="fa-solid fa-chevron-down"></i>
+              </button>
+            </div>
+
+            <!-- Vertical Up/Down & Gripper Column -->
+            <div class="pendant-actions">
+              <div class="vertical-jog-group">
+                <button id="btnJogUp" class="action-jog-btn jog-up" title="Lift Up (PageUp / Key U)">
+                  <i class="fa-solid fa-arrow-up"></i> UP
+                </button>
+                <button id="btnJogDown" class="action-jog-btn jog-down" title="Lower Down (PageDown / Key J)">
+                  <i class="fa-solid fa-arrow-down"></i> DOWN
+                </button>
+              </div>
+
+              <div class="gripper-jog-group">
+                <button id="btnJogGripClose" class="action-jog-btn grip-close" title="Clamp Gripper (Space)">
+                  <i class="fa-solid fa-compress"></i> CLAMP
+                </button>
+                <button id="btnJogGripOpen" class="action-jog-btn grip-open" title="Open Gripper">
+                  <i class="fa-solid fa-expand"></i> OPEN
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div class="pendant-footer">
+            <span class="pendant-hint"><i class="fa-solid fa-keyboard"></i> Use Keyboard Arrow Keys (Up/Down/Left/Right)</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Overlaid 3D Viewport Controls & Telemetry HUD -->
+      <div class="hud-overlay top-left">
+        <div class="hud-box">
+          <div class="hud-row"><span class="hud-label">ARM REACH:</span> <span id="hudReach">105 cm max</span></div>
+          <div class="hud-row"><span class="hud-label">END-EFFECTOR (X,Y,Z):</span> <span id="hudEndEffector">0, 95, 0</span></div>
+          <div class="hud-row"><span class="hud-label">FPS:</span> <span id="hudFps">60</span></div>
+        </div>
+      </div>
+
+      <div class="hud-overlay bottom-left">
+        <div class="hud-badge"><i class="fa-solid fa-mouse-pointer"></i> Left Drag: Orbit | Right Drag: Pan | Scroll: Zoom</div>
+      </div>
+
+      <div class="hud-overlay bottom-right">
+        <button id="btnToggleGhost" class="hud-btn" title="Toggle Target Ghost"><i class="fa-solid fa-ghost"></i> Ghost Arm</button>
+        <button id="btnToggleGrid" class="hud-btn" title="Toggle Floor Grid"><i class="fa-solid fa-border-all"></i> Grid</button>
+        <button id="btnToggleAxes" class="hud-btn" title="Toggle Coordinate Axes"><i class="fa-solid fa-arrows-up-down-left-right"></i> Axes</button>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- Notification Toast -->
+  <div id="toast" class="toast"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
+
